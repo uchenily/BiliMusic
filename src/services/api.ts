@@ -385,7 +385,7 @@ export async function getPopularVideos(ps = 10, pn = 1): Promise<VideoInfo[]> {
     ownerName: v.owner?.name,
     ownerMid: v.owner?.mid,
     duration: v.duration,
-    cid: v.cid,
+    cid: v.cid || 0,
     stat: {
       view: v.stat?.view,
       like: v.stat?.like,

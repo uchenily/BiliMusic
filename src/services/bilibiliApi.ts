@@ -51,6 +51,17 @@ class BiliApiError extends Error {
   }
 }
 
+async function biliWbiFetch<T>(path: string, params: Record<string, string | number>): Promise<T> {
+  const query = await encodeWbi(params)
+  const resp = await fetch(`${BILI_API}${path}?${query}`, {
+    credentials: 'include',
+    headers: { Referer: 'https://www.bilibili.com' },
+  })
+  const data = await resp.json()
+  if (data.code !== 0) throw new BiliApiError(data.code, data.message, path)
+  return data.data as T
+}
+
 // ===== WBI 签名 =====
 //
 // B 站部分接口（搜索等）要求 WBI 签名：在请求参数中追加 wts + w_rid。
@@ -349,6 +360,119 @@ export async function getVideoDetail(bvid: string): Promise<VideoDetail> {
   return biliFetch('/x/web-interface/view', { params: { bvid } })
 }
 
+// ===== B站字幕 =====
+
+interface PlayerSubtitleItem {
+  id?: number
+  lan?: string
+  lan_doc?: string
+  subtitle_url?: string
+  ai_status?: number
+  ai_type?: number
+}
+
+interface PlayerV2Data {
+  subtitle?: {
+    list?: PlayerSubtitleItem[]
+    subtitles?: PlayerSubtitleItem[]
+  }
+}
+
+interface SubtitlePayload {
+  body?: Array<{
+    from?: number
+    to?: number
+    content?: string
+  }>
+}
+
+export interface BilibiliSubtitleLyric {
+  lines: Array<{ time: number; text: string }>
+  subtitleId: string
+  language: string
+}
+
+function cleanSubtitleText(raw: string): string {
+  return raw.replace(/^♪ /, '').replace(/ ♪$/, '')
+}
+
+function normalizeSubtitleUrl(raw: string): string {
+  if (raw.startsWith('//')) return `https:${raw}`
+  if (raw.startsWith('/')) return `${BILI_API}${raw}`
+  return raw
+}
+
+async function fetchSubtitlePayload(url: string): Promise<SubtitlePayload> {
+  const electronFetch = typeof window !== 'undefined'
+    ? window.electronAPI?.biliApi?.fetchSubtitle
+    : undefined
+  if (electronFetch) return electronFetch(url) as Promise<SubtitlePayload>
+
+  const response = await fetch(url, {
+    credentials: 'include',
+    headers: { Referer: 'https://www.bilibili.com' },
+  })
+  if (!response.ok) throw new Error(`Subtitle request failed: ${response.status}`)
+  return response.json() as Promise<SubtitlePayload>
+}
+
+function subtitlePriority(item: PlayerSubtitleItem): number {
+  const language = `${item.lan || ''} ${item.lan_doc || ''}`.toLowerCase()
+  let score = 0
+  // B站页面显示为“中文（AI）”时，lan_doc 通常包含“AI”，而不是只依赖 ai_status。
+  if (language.includes('ai-zh') || language.includes('zh-cn')) score += 100
+  if (language.includes('中文') || language.includes('chinese')) score += 80
+  if (language.includes('ai') || language.includes('人工智能')) score += 60
+  if (item.ai_status || item.ai_type) score += 20
+  return score
+}
+
+/**
+ * 读取 B 站播放器提供的 CC/AI 字幕，并转换为歌词时间轴。
+ * 这条时间轴来自视频本身，不依赖 QQ Music 歌曲时长，因此适合合集视频。
+ */
+export async function getBilibiliSubtitleLyric(
+  bvid: string,
+  cid?: string | number,
+): Promise<BilibiliSubtitleLyric | null> {
+  if (!bvid) return null
+  const actualCid = Number(cid) || (await getVideoDetail(bvid)).cid
+  if (!actualCid) return null
+
+  // 未签名的 /x/player/v2 会返回与当前视频不匹配的字幕数据；页面实际使用 WBI 签名接口。
+  const player = await biliWbiFetch<PlayerV2Data>('/x/player/wbi/v2', {
+    bvid,
+    cid: actualCid,
+  })
+  const subtitles = [...(player.subtitle?.subtitles || player.subtitle?.list || [])]
+    .filter((item) => item.subtitle_url)
+    .sort((a, b) => subtitlePriority(b) - subtitlePriority(a))
+
+  for (const subtitle of subtitles) {
+    try {
+      const payload = await fetchSubtitlePayload(normalizeSubtitleUrl(subtitle.subtitle_url!))
+      const lines = (payload.body || [])
+        .map((line) => ({
+          time: Number(line.from),
+          text: cleanSubtitleText(line.content || ''),
+        }))
+        .filter((line) => Number.isFinite(line.time) && line.time >= 0 && line.text)
+
+      if (lines.length) {
+        return {
+          lines,
+          subtitleId: String(subtitle.id || subtitle.subtitle_url),
+          language: subtitle.lan_doc || subtitle.lan || 'Bilibili',
+        }
+      }
+    } catch {
+      // 某种字幕格式或 CDN 暂时不可用时继续尝试下一份字幕。
+    }
+  }
+
+  return null
+}
+
 // ===== 评论 =====
 
 export interface ReplyMember {
@@ -479,6 +603,7 @@ export interface PopularVideo {
   aid: number
   title: string
   pic: string
+  cid?: number
   owner: VideoOwner
   stat: VideoStat
   duration: number

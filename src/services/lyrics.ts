@@ -6,6 +6,7 @@
  */
 
 import type { Track } from '@/types'
+import { getBilibiliSubtitleLyric, type BilibiliSubtitleLyric } from '@/services/bilibiliApi'
 
 export interface LyricLine {
   time: number
@@ -285,60 +286,111 @@ function lyricToResult(candidate: LyricCandidate, content: string): LyricResult 
 // ===== 缓存 =====
 
 const CACHE_KEY = 'bilimusic_lyrics_v2'
+const BILIBILI_CACHE_KEY = 'bilimusic_lyrics_bilibili_v2'
 const MISS_TTL = 24 * 60 * 60 * 1000
 
 type CacheEntry =
   | { status: 'ok'; result: LyricResult }
   | { status: 'miss'; ts: number }
 
-function readCache(): Record<string, CacheEntry> {
+function readCache(key = CACHE_KEY): Record<string, CacheEntry> {
   try {
-    return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}')
+    return JSON.parse(localStorage.getItem(key) || '{}')
   } catch {
     return {}
   }
 }
 
-function writeCache(map: Record<string, CacheEntry>): void {
+function writeCache(map: Record<string, CacheEntry>, key = CACHE_KEY): void {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(map))
+    localStorage.setItem(key, JSON.stringify(map))
   } catch {
     // 配额满等情况忽略。
   }
 }
 
-function cacheOk(trackId: string, result: LyricResult): void {
-  const map = readCache()
+function cacheOk(trackId: string, result: LyricResult, key = CACHE_KEY): void {
+  const map = readCache(key)
   map[trackId] = { status: 'ok', result }
-  writeCache(map)
+  writeCache(map, key)
 }
 
-function cacheMiss(trackId: string): void {
-  const map = readCache()
+function cacheMiss(trackId: string, key = CACHE_KEY): void {
+  const map = readCache(key)
   map[trackId] = { status: 'miss', ts: Date.now() }
-  writeCache(map)
+  writeCache(map, key)
 }
 
 export function clearLyricCache(trackId: string): void {
-  const map = readCache()
-  delete map[trackId]
-  writeCache(map)
+  for (const key of [CACHE_KEY, BILIBILI_CACHE_KEY]) {
+    const map = readCache(key)
+    delete map[trackId]
+    writeCache(map, key)
+  }
 }
 
-export async function getLyricForTrack(track: Track): Promise<LyricResult | null> {
-  const entry = readCache()[track.id]
+function bilibiliLyricToResult(data: BilibiliSubtitleLyric): LyricResult | null {
+  if (!data.lines.length) return null
+  return {
+    lines: data.lines,
+    synced: true,
+    instrumental: false,
+    trackName: 'Bilibili AI 字幕',
+    artistName: data.language || 'Bilibili',
+    sourceId: `bilibili:${data.subtitleId}`,
+  }
+}
+
+export type LyricSource = 'auto' | 'remote' | 'bilibili'
+
+async function loadBilibiliLyric(track: Track): Promise<LyricResult | null> {
+  const entry = readCache(BILIBILI_CACHE_KEY)[track.id]
+  if (entry?.status === 'ok') return entry.result
+  if (entry?.status === 'miss' && Date.now() - entry.ts < MISS_TTL) return null
+
+  try {
+    const subtitle = await getBilibiliSubtitleLyric(track.bvid, track.cid)
+    const result = subtitle ? bilibiliLyricToResult(subtitle) : null
+    if (result) {
+      cacheOk(track.id, result, BILIBILI_CACHE_KEY)
+      return result
+    }
+    cacheMiss(track.id, BILIBILI_CACHE_KEY)
+  } catch {
+    // 字幕接口或字幕 CDN 暂时不可用时，不阻断 QQ Music 歌词流程。
+  }
+  return null
+}
+
+async function loadRemoteLyric(track: Track): Promise<LyricResult | null> {
+  const entry = readCache(CACHE_KEY)[track.id]
   if (entry?.status === 'ok') return entry.result
   if (entry?.status === 'miss' && Date.now() - entry.ts < MISS_TTL) return null
 
   const candidate = await searchBestCandidate(track)
-  if (!candidate) { cacheMiss(track.id); return null }
+  if (!candidate) {
+    cacheMiss(track.id, CACHE_KEY)
+    return null
+  }
 
   const content = await oiGetLyric(candidate.songId)
   const result = lyricToResult(candidate, content)
-  if (!result) { cacheMiss(track.id); return null }
+  if (!result) {
+    cacheMiss(track.id, CACHE_KEY)
+    return null
+  }
 
-  cacheOk(track.id, result)
+  cacheOk(track.id, result, CACHE_KEY)
   return result
+}
+
+export async function getLyricForTrack(track: Track, source: LyricSource = 'auto'): Promise<LyricResult | null> {
+  if (source === 'auto') {
+    // 自动模式优先 QQ Music，查不到时再使用视频自身时间轴的 Bilibili AI 字幕。
+    return (await loadRemoteLyric(track)) || loadBilibiliLyric(track)
+  }
+  if (source === 'bilibili') return loadBilibiliLyric(track)
+  return loadRemoteLyric(track)
 }
 
 export async function searchLyricCandidates(query: string): Promise<LyricCandidate[]> {

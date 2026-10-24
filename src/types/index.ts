@@ -41,6 +41,7 @@ export interface AppSettings {
   downloadDir: string
   autoPlay: boolean
   showLyrics: boolean
+  lyricsSource: 'auto' | 'remote' | 'bilibili'
 }
 
 export type NavItem = {
