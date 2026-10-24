@@ -444,8 +444,15 @@ export async function getBilibiliSubtitleLyric(
     bvid,
     cid: actualCid,
   })
-  const subtitles = [...(player.subtitle?.subtitles || player.subtitle?.list || [])]
-    .filter((item) => item.subtitle_url)
+  // 不同接口版本可能把字幕放在 subtitles 或 list；空数组也是真值，不能使用 || 只取其中一个。
+  const subtitleMap = new Map<string, PlayerSubtitleItem>()
+  for (const item of [
+    ...(player.subtitle?.subtitles || []),
+    ...(player.subtitle?.list || []),
+  ]) {
+    if (item.subtitle_url) subtitleMap.set(item.subtitle_url, item)
+  }
+  const subtitles = [...subtitleMap.values()]
     .sort((a, b) => subtitlePriority(b) - subtitlePriority(a))
 
   for (const subtitle of subtitles) {
@@ -732,11 +739,13 @@ export async function extractAudioFromSearch(
  */
 export async function extractAudioFromVideo(
   bvid: string,
-  fallback?: { aid?: string | number; cid?: string | number },
+  fallback?: { aid?: string | number; cid?: string | number; pageCid?: string | number },
 ): Promise<TrackSource> {
   try {
     const detail = await getVideoDetail(bvid)
-    const playData = await getPlayUrl(bvid, detail.cid)
+    // pageCid 是当前分 P 的 CID；旧 cid 仅作为音乐中心稿件失效时的 avid+cid 回退。
+    const cid = Number(fallback?.pageCid) || detail.cid
+    const playData = await getPlayUrl(bvid, cid)
     const audioUrl = getBestAudioUrl(playData)
 
     const bestAudio = [...playData.dash.audio].sort((a, b) => b.bandwidth - a.bandwidth)[0]
@@ -744,7 +753,7 @@ export async function extractAudioFromVideo(
     return {
       bvid: detail.bvid,
       aid: detail.aid,
-      cid: detail.cid,
+      cid,
       title: detail.title,
       artist: detail.owner.name,
       coverUrl: toHttpsUrl(detail.pic),

@@ -32,7 +32,11 @@ export default function NowPlaying() {
   const { settings, setAppSettings } = useAppSettings()
   const track = player.currentTrack
   const lyrics = useLyrics(track, expanded && settings.showLyrics, settings.lyricsSource)
-  const duration = liveDuration || track?.duration || 0
+  const duration = liveDuration > 0
+    ? liveDuration
+    : track?.pageCid
+      ? (track.duration || 0)
+      : 0
   const [fullscreen, setFullscreen] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)
   const [commentsOpen, setCommentsOpen] = useState(false)
