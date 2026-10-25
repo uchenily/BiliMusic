@@ -738,7 +738,6 @@ body {
   border-bottom: 1px solid var(--glass-border);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  -webkit-app-region: drag;
 }
 
 .app-titlebar--native {
@@ -754,6 +753,13 @@ body {
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0;
+}
+
+.app-titlebar__drag-region {
+  flex: 1;
+  align-self: stretch;
+  min-width: 0;
+  -webkit-app-region: drag;
 }
 
 .app-titlebar__logo {
@@ -774,6 +780,7 @@ body {
 }
 
 .app-window-button {
+  -webkit-app-region: no-drag;
   width: 46px;
   height: 36px;
   display: grid;
@@ -1818,12 +1825,14 @@ body {
 }
 
 .now-playing-top__actions {
+  -webkit-app-region: no-drag;
   display: inline-flex;
   align-items: center;
   gap: 10px;
 }
 
 .now-playing-close {
+  -webkit-app-region: no-drag;
   width: 36px;
   height: 36px;
   display: grid;

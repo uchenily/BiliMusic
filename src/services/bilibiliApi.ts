@@ -4,15 +4,28 @@
  * 已验证的 API 接口，通过浏览器 Cookie 认证访问 B 站接口
  */
 
+import { isTauri, tauriInvoke, toBiliImageUrl } from '@/services/tauriApi'
+
 const BILI_API = 'https://api.bilibili.com'
+
+async function requestBiliJson(path: string): Promise<any> {
+  if (isTauri()) {
+    // Keep the same browser User-Agent that Electron sent through Chromium.
+    // Do not hardcode a Chrome version: WebView2 owns this value.
+    const userAgent = typeof navigator === 'undefined' ? undefined : navigator.userAgent
+    return tauriInvoke('bili_raw', { path, userAgent })
+  }
+  const resp = await fetch(`${BILI_API}${path}`, {
+    credentials: 'include',
+    headers: { Referer: 'https://www.bilibili.com' },
+  })
+  return resp.json()
+}
 
 // B站图片地址统一转 https：http:// 的 hdslb 图在渲染进程会加载失败
 // （大量 https 连接建立后同主机 cleartext 请求冲突），// 协议相对地址同样补全
 export function toHttpsUrl(url: string): string {
-  if (!url) return ''
-  if (url.startsWith('//')) return `https:${url}`
-  if (url.startsWith('http://')) return `https://${url.slice(7)}`
-  return url
+  return toBiliImageUrl(url)
 }
 
 interface BiliFetchOptions {
@@ -21,20 +34,13 @@ interface BiliFetchOptions {
 }
 
 async function biliFetch<T>(path: string, options: BiliFetchOptions = {}): Promise<T> {
-  const { credentials = 'include', params } = options
+  const { params } = options
   const url = new URL(`${BILI_API}${path}`)
   if (params) {
     Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
   }
 
-  const resp = await fetch(url.toString(), {
-    credentials,
-    headers: {
-      Referer: 'https://www.bilibili.com',
-    },
-  })
-
-  const data = await resp.json()
+  const data = await requestBiliJson(`${url.pathname}${url.search}`)
   if (data.code !== 0) {
     throw new BiliApiError(data.code, data.message, path)
   }
@@ -53,11 +59,7 @@ class BiliApiError extends Error {
 
 async function biliWbiFetch<T>(path: string, params: Record<string, string | number>): Promise<T> {
   const query = await encodeWbi(params)
-  const resp = await fetch(`${BILI_API}${path}?${query}`, {
-    credentials: 'include',
-    headers: { Referer: 'https://www.bilibili.com' },
-  })
-  const data = await resp.json()
+  const data = await requestBiliJson(`${path}?${query}`)
   if (data.code !== 0) throw new BiliApiError(data.code, data.message, path)
   return data.data as T
 }
@@ -147,11 +149,7 @@ async function getWbiKeys(): Promise<{ imgKey: string; subKey: string }> {
     return { imgKey: wbiKeysCache.imgKey, subKey: wbiKeysCache.subKey }
   }
   // 不能用 biliFetch：未登录时 nav 返回 code -101 会抛错，但 wbi_img 仍有效
-  const resp = await fetch(`${BILI_API}/x/web-interface/nav`, {
-    credentials: 'include',
-    headers: { Referer: 'https://www.bilibili.com' },
-  })
-  const json = await resp.json()
+  const json = await requestBiliJson('/x/web-interface/nav')
   const imgUrl: string = json?.data?.wbi_img?.img_url || ''
   const subUrl: string = json?.data?.wbi_img?.sub_url || ''
   const imgKey = imgUrl.slice(imgUrl.lastIndexOf('/') + 1).split('.')[0]
@@ -224,11 +222,7 @@ export async function searchVideo(
     page,
     page_size: pageSize,
   })
-  const resp = await fetch(`${BILI_API}/x/web-interface/wbi/search/type?${query}`, {
-    credentials: 'include',
-    headers: { Referer: 'https://www.bilibili.com' },
-  })
-  const data = await resp.json()
+  const data = await requestBiliJson(`/x/web-interface/wbi/search/type?${query}`)
   if (data.code !== 0) {
     throw new BiliApiError(data.code, data.message, '/x/web-interface/wbi/search/type')
   }
@@ -268,11 +262,7 @@ export async function searchUser(
     page,
     page_size: pageSize,
   })
-  const resp = await fetch(`${BILI_API}/x/web-interface/wbi/search/type?${query}`, {
-    credentials: 'include',
-    headers: { Referer: 'https://www.bilibili.com' },
-  })
-  const data = await resp.json()
+  const data = await requestBiliJson(`/x/web-interface/wbi/search/type?${query}`)
   if (data.code !== 0) {
     throw new BiliApiError(data.code, data.message, '/x/web-interface/wbi/search/type')
   }
@@ -307,11 +297,7 @@ export async function getUserVideos(
   order: 'pubdate' | 'click' = 'pubdate',
 ): Promise<SpaceArcSearchData> {
   const query = await encodeWbi({ mid, pn: page, ps: pageSize, order, platform: 'web' })
-  const resp = await fetch(`${BILI_API}/x/space/wbi/arc/search?${query}`, {
-    credentials: 'include',
-    headers: { Referer: `https://space.bilibili.com/${mid}/video` },
-  })
-  const data = await resp.json()
+  const data = await requestBiliJson(`/x/space/wbi/arc/search?${query}`)
   if (data.code !== 0) {
     throw new BiliApiError(data.code, data.message, '/x/space/wbi/arc/search')
   }
@@ -398,16 +384,18 @@ function cleanSubtitleText(raw: string): string {
 
 function normalizeSubtitleUrl(raw: string): string {
   if (raw.startsWith('//')) return `https:${raw}`
+  if (raw.startsWith('http://')) return `https://${raw.slice(7)}`
   if (raw.startsWith('/')) return `${BILI_API}${raw}`
   return raw
 }
 
 async function fetchSubtitlePayload(url: string): Promise<SubtitlePayload> {
-  const electronFetch = typeof window !== 'undefined'
-    ? window.electronAPI?.biliApi?.fetchSubtitle
-    : undefined
-  if (electronFetch) return electronFetch(url) as Promise<SubtitlePayload>
-
+  if (isTauri()) {
+    // Subtitle CDN requests used Chromium's real headers in Electron.
+    // Forward the current WebView2 UA instead of inventing one in Rust.
+    const userAgent = typeof navigator === 'undefined' ? undefined : navigator.userAgent
+    return tauriInvoke<SubtitlePayload>('fetch_subtitle', { url, userAgent })
+  }
   const response = await fetch(url, {
     credentials: 'include',
     headers: { Referer: 'https://www.bilibili.com' },
@@ -825,6 +813,7 @@ export interface QrPollResult {
  * 生成扫码登录二维码
  */
 export async function generateQrCode(): Promise<QrCodeData> {
+  if (isTauri()) return tauriInvoke<QrCodeData>('qr_generate')
   const resp = await fetch(`${BILI_API.replace('api', 'passport')}/x/passport-login/web/qrcode/generate`, {
     credentials: 'include',
     headers: { Referer: 'https://passport.bilibili.com/login' },
@@ -848,6 +837,7 @@ export async function generateQrCode(): Promise<QrCodeData> {
  * 0     = 登录成功
  */
 export async function pollQrCode(qrcodeKey: string): Promise<QrPollResult> {
+  if (isTauri()) return tauriInvoke<QrPollResult>('qr_poll', { qrcodeKey })
   const resp = await fetch(
     `${BILI_API.replace('api', 'passport')}/x/passport-login/web/qrcode/poll?qrcode_key=${qrcodeKey}`,
     {

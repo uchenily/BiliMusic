@@ -1,8 +1,10 @@
 import { createContext, useContext, useState, useCallback, useMemo, useRef, useEffect, type ReactNode } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import type { Track, RepeatMode } from '@/types'
 import { extractAudio, getVideoDetail } from '@/services/api'
 import { addRecentTrack, toggleFavoriteTrack, loadFavoriteTracks } from '@/utils/storage'
 import { useAppSettings } from '@/hooks/useAppSettings'
+import { isTauri, tauriInvoke, toBiliAudioUrl } from '@/services/tauriApi'
 
 interface PlayerState {
   currentTrack: Track | null
@@ -128,7 +130,7 @@ function setMediaSessionAction(action: MediaSessionAction, handler: MediaSession
   try {
     navigator.mediaSession.setActionHandler(action, handler)
   } catch {
-    // Some Chromium/Electron platform builds expose only part of the action set.
+    // Some desktop webviews expose only part of the action set.
   }
 }
 
@@ -346,7 +348,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
 
         const targetProgress = progress > 0 ? progress : 0
         pendingSeekRef.current = targetProgress
-        audio.src = source.audioUrl
+        audio.src = toBiliAudioUrl(source.audioUrl)
         audio.load()
         if (source.duration > 0) setDuration(source.duration)
 
@@ -639,28 +641,29 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [currentTrack, duration, isMuted, isPlaying, isShuffled, progress, queue, repeatMode, volume])
 
   useEffect(() => {
-    const pushTrayState = () => window.electronAPI?.updateTrayPlayerState?.({
-      hasTrack: Boolean(currentTrack),
-      title: currentTrack?.title || '未在播放',
-      artist: currentTrack?.artist || '搜索并播放音乐',
-      coverUrl: currentTrack?.coverUrl || '',
-      isPlaying,
-      queueLength: queue.length,
-      theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
-    })
-    pushTrayState()
-    // 主题切换时重新推送，使托盘面板跟随浅色/深色
-    const observer = new MutationObserver(pushTrayState)
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
+    if (!isTauri()) return
+    void tauriInvoke('update_tray_player_state', {
+      state: {
+        hasTrack: Boolean(currentTrack),
+        title: currentTrack?.title || '未在播放',
+        artist: currentTrack?.artist || '搜索并播放音乐',
+        coverUrl: currentTrack?.coverUrl || '',
+        isPlaying,
+        queueLength: queue.length,
+        theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+      },
+    }).catch(() => {})
   }, [currentTrack?.artist, currentTrack?.coverUrl, currentTrack?.id, currentTrack?.title, isPlaying, queue.length])
 
   useEffect(() => {
-    return window.electronAPI?.onTrayPlayerCommand?.((command) => {
+    if (!isTauri()) return
+    let unlisten: (() => void) | undefined
+    void listen<'toggle-play' | 'next' | 'prev'>('tray-player-command', ({ payload: command }) => {
       if (command === 'toggle-play') togglePlay()
       if (command === 'next') next()
       if (command === 'prev') prev()
-    })
+    }).then((stop) => { unlisten = stop })
+    return () => { unlisten?.() }
   }, [next, prev, togglePlay])
 
   useEffect(() => {

@@ -1,33 +1,13 @@
 /**
  * biliMusic API 适配层
  *
- * Electron 环境：通过 IPC 调用主进程 API（绕过 CORS）
+ * 桌面环境：通过 Tauri command 调用 Rust API（绕过 CORS）
  * 浏览器环境：通过 renderer 端 bilibiliApi.ts 直接调用（需要 B 站 Cookie）
  */
 
 import type { TrackSource } from '@/services/bilibiliApi'
+import { isTauri, tauriBiliApi, toBiliImageUrl } from '@/services/tauriApi'
 
-function isElectron(): boolean {
-  return !!window.electronAPI?.biliApi
-}
-
-// 在 Electron 环境下直接用浏览器 fetch（CORS 已被主进程绕过）
-// 相比 IPC net.fetch，浏览器 fetch 自带完整请求头/Cookie，不会被 B站反爬拦截
-async function electronFetch<T>(path: string, params?: Record<string, string | number>): Promise<T> {
-  const url = new URL('https://api.bilibili.com' + path)
-  if (params) {
-    Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
-  }
-  const resp = await fetch(url.toString(), {
-    credentials: 'include',
-    headers: { Referer: 'https://www.bilibili.com' },
-  })
-  const data = await resp.json()
-  if (data.code !== 0) {
-    throw { code: data.code, message: data.message, path }
-  }
-  return data.data as T
-}
 
 // ===== 搜索 =====
 
@@ -42,11 +22,7 @@ export interface SearchItem {
 }
 
 function normalizePic(pic: string): string {
-  if (!pic) return ''
-  if (pic.startsWith('https://')) return pic
-  if (pic.startsWith('http://')) return pic.replace('http://', 'https://')
-  if (pic.startsWith('//')) return `https:${pic}`
-  return `https:${pic}`
+  return toBiliImageUrl(pic)
 }
 
 export async function searchVideo(keyword: string, page = 1, pageSize = 20): Promise<{ items: SearchItem[]; totalPages: number; totalResults: number }> {
@@ -100,7 +76,7 @@ export async function getVideoDetail(bvid: string): Promise<VideoInfo> {
     aid: data.aid,
     title: data.title,
     desc: data.desc?.substring(0, 100),
-    pic: data.pic,
+    pic: normalizePic(data.pic),
     ownerName: data.owner?.name,
     ownerMid: data.owner?.mid,
     duration: data.duration,
@@ -185,11 +161,8 @@ export async function extractAudio(
 // ===== 下载音频 =====
 
 export async function downloadAudio(audioUrl: string, filename: string): Promise<{ filePath: string; size: number }> {
-  if (isElectron()) {
-    return window.electronAPI.biliApi.downloadAudio(audioUrl, filename)
-  }
-
-  throw new Error('Audio download requires Electron environment')
+  if (isTauri()) return tauriBiliApi.downloadAudio(audioUrl, filename)
+  throw new Error('Audio download requires the desktop app')
 }
 
 // ===== 用户信息 =====
@@ -202,7 +175,7 @@ export async function getUserInfo(): Promise<{ isLogin: boolean; mid: number; un
     isLogin: data.isLogin,
     mid: data.mid,
     uname: data.uname,
-    face: data.face || '',
+    face: normalizePic(data.face || ''),
   }
 }
 
@@ -366,11 +339,6 @@ export async function getRecommendVideos(ps = 20): Promise<VideoInfo[]> {
     },
   })
 
-  if (isElectron()) {
-    const data = await electronFetch<{ item: any[] }>('/x/web-interface/index/top/rcmd', { ps })
-    return (data.item || []).map(parseItem)
-  }
-
   const { getRecommendedVideos: rendererRec } = await import('@/services/bilibiliApi')
   const data = await rendererRec(ps)
   return (data.item || []).map(parseItem)
@@ -415,27 +383,18 @@ export interface QrPollResult {
 }
 
 export async function generateQrCode(): Promise<QrCodeData> {
-  if (isElectron()) {
-    const data = await window.electronAPI.biliApi.qrGenerate()
-    return { url: data.url, qrcodeKey: data.qrcodeKey }
-  }
-
   const { generateQrCode: rendererGen } = await import('@/services/bilibiliApi')
   return rendererGen()
 }
 
 export async function pollQrCode(qrcodeKey: string): Promise<QrPollResult> {
-  if (isElectron()) {
-    return window.electronAPI.biliApi.qrPoll(qrcodeKey)
-  }
-
   const { pollQrCode: rendererPoll } = await import('@/services/bilibiliApi')
   return rendererPoll(qrcodeKey)
 }
 
 export async function getLoginStatus(): Promise<{ isLoggedIn: boolean; sessdata?: string }> {
-  if (isElectron()) {
-    const cookies = await window.electronAPI.biliApi.getCookies()
+  if (isTauri()) {
+    const cookies = await tauriBiliApi.getCookies()
     return { isLoggedIn: cookies.isLoggedIn, sessdata: cookies.sessdata }
   }
 
@@ -445,11 +404,11 @@ export async function getLoginStatus(): Promise<{ isLoggedIn: boolean; sessdata?
 }
 
 export async function logout(): Promise<void> {
-  if (isElectron()) {
-    await window.electronAPI.biliApi.logout()
+  if (isTauri()) {
+    await tauriBiliApi.logout()
     return
   }
 
   // 浏览器环境无法清除 bilibili.com 的 Cookie（跨域）
-  throw new Error('Logout requires Electron environment')
+  throw new Error('Logout requires the desktop app')
 }

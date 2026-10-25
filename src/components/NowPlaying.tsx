@@ -13,6 +13,7 @@ import PlayerSlider from '@/components/PlayerSlider'
 import LyricsView from '@/components/LyricsView'
 import type { LyricCandidate, LyricSource } from '@/services/lyrics'
 import { getVideoComments, type VideoComment } from '@/services/api'
+import { currentWindow, isTauri, openExternal } from '@/services/tauriApi'
 
 const sliderTheme = {
   ['--track-bg']: 'rgba(255,255,255,0.18)',
@@ -55,33 +56,22 @@ export default function NowPlaying() {
   }, [expanded, close])
 
   useEffect(() => {
-    const api = window.electronAPI
-    if (!api) return
-    api.isFullscreen?.().then(setFullscreen).catch(() => {})
-    return api.onFullscreenChange?.(setFullscreen)
+    if (!isTauri()) return
+    const appWindow = currentWindow()
+    const sync = () => { void appWindow.isFullscreen().then(setFullscreen).catch(() => {}) }
+    sync()
+    const timer = window.setInterval(sync, 250)
+    return () => window.clearInterval(timer)
   }, [])
 
-  useEffect(() => {
-    const api = window.electronAPI
-    if (api?.platform !== 'openharmony') return
-    api.setWindowButtonVisibility?.(!expanded)
-    return () => api.setWindowButtonVisibility?.(true)
-  }, [expanded])
-
   const toggleFullscreen = () => {
-    window.electronAPI?.toggleFullscreen?.()
-    window.electronAPI?.isFullscreen?.()
-      .then(setFullscreen)
-      .catch(() => {})
-    window.setTimeout(() => {
-      window.electronAPI?.isFullscreen?.()
-        .then(setFullscreen)
-        .catch(() => {})
-    }, 180)
+    if (!isTauri()) return
+    const appWindow = currentWindow()
+    void appWindow.isFullscreen().then((value) => appWindow.setFullscreen(!value)).then(() => appWindow.isFullscreen()).then(setFullscreen).catch(() => {})
   }
 
   const closeToTray = () => {
-    window.electronAPI?.close()
+    if (isTauri()) void currentWindow().hide()
   }
 
   const openArtistSpace = () => {
@@ -92,7 +82,7 @@ export default function NowPlaying() {
 
   const openSourceVideo = () => {
     if (!track?.bvid) return
-    window.electronAPI?.openExternal?.(`https://www.bilibili.com/video/${track.bvid}`)
+    void openExternal(`https://www.bilibili.com/video/${track.bvid}`)
   }
 
   const loadComments = useCallback(async (page = 1) => {
@@ -195,7 +185,7 @@ export default function NowPlaying() {
             )}
           </div>
 
-          <header className="now-playing-top now-playing-ui now-playing-ui--top" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+          <header className="now-playing-top now-playing-ui now-playing-ui--top">
             <motion.button
               type="button"
               className="now-playing-close"
@@ -213,6 +203,7 @@ export default function NowPlaying() {
                 className="now-playing-close"
                 onClick={openSourceVideo}
                 title="在浏览器中打开视频"
+                style={noDrag}
                 whileHover={{ y: 1, backgroundColor: 'rgba(255,255,255,0.18)' }}
                 whileTap={{ scale: 0.92 }}
               >
@@ -223,6 +214,7 @@ export default function NowPlaying() {
                 className="now-playing-close"
                 onClick={toggleFullscreen}
                 title={fullscreen ? '退出全屏' : '全屏'}
+                style={noDrag}
                 whileHover={{ y: 1, backgroundColor: 'rgba(255,255,255,0.18)' }}
                 whileTap={{ scale: 0.92 }}
               >
@@ -233,6 +225,7 @@ export default function NowPlaying() {
                 className="now-playing-close"
                 onClick={closeToTray}
                 title="关闭到托盘"
+                style={noDrag}
                 whileHover={{ y: 1, backgroundColor: 'rgba(255,255,255,0.18)' }}
                 whileTap={{ scale: 0.92 }}
               >

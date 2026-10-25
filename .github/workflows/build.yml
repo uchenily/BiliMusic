@@ -1,10 +1,5 @@
 name: Build Multi-Platform
 
-# 三平台 × 多架构打包 + 自动更新元数据发布。
-# 每个 OS 一个 job，单次 electron-builder 调用构建该 OS 全部架构 —— 这样每个 OS 只产出
-# 一个含多架构 files 数组的 latest*.yml（electron-updater 按运行架构自选），避免多 job 覆盖。
-# Linux job 额外产出平台无关的 OTA 渲染包（renderer-<v>.asar + ota.json）供渲染热补丁下发。
-# 触发：推送 v* tag，或手动运行（workflow_dispatch，仅构建产物、不发布）。
 on:
   push:
     tags:
@@ -23,11 +18,11 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            args: --win --x64 --ia32 --arm64
+            target: x86_64-pc-windows-msvc
           - os: macos-latest
-            args: --mac --x64 --arm64
-          - os: ubuntu-latest
-            args: --linux --x64 --arm64
+            target: x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
 
     steps:
       - name: Checkout
@@ -39,38 +34,29 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - name: Install dependencies
         run: npm ci
 
-      - name: Build renderer & main process
-        run: npm run build
-
-      - name: Package (生成各架构安装包 + latest*.yml + blockmap)
-        # --publish never 不上传，但仍生成 latest*.yml 与 blockmap，由 release job 统一发布
-        run: npx electron-builder ${{ matrix.args }} --publish never
-        env:
-          # CI 无签名证书：跳过 macOS 自动签名，产出未签名包
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-
-      - name: Build OTA renderer bundle (Linux only, 平台无关只产一次)
-        if: matrix.os == 'ubuntu-latest'
-        run: node scripts/build-ota.mjs
+      - name: Build Tauri application
+        run: npm run tauri:build -- --target ${{ matrix.target }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}
-          path: |
-            release/*.exe
-            release/*.dmg
-            release/*.zip
-            release/*.AppImage
-            release/*.deb
-            release/*.yml
-            release/*.blockmap
-            release/ota/ota.json
-            release/ota/renderer-*.asar
-          if-no-files-found: ignore
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/**
+          if-no-files-found: error
           retention-days: 14
 
   release:
@@ -86,8 +72,6 @@ jobs:
           merge-multiple: true
 
       - name: Publish release assets
-        # latest*.yml + 安装包 + blockmap + ota.json + renderer-<v>.asar 一并发布；
-        # 发布为正式 release（非 draft），electron-updater 与 OTA manifest 方能从 latest 拉取
         uses: softprops/action-gh-release@v2
         with:
           name: BiliMusic ${{ github.ref_name }}

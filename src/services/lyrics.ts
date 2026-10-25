@@ -7,6 +7,7 @@
 
 import type { Track } from '@/types'
 import { getBilibiliSubtitleLyric, type BilibiliSubtitleLyric } from '@/services/bilibiliApi'
+import { isTauri, tauriInvoke } from '@/services/tauriApi'
 
 export interface LyricLine {
   time: number
@@ -33,17 +34,34 @@ export interface LyricCandidate {
   image: string
 }
 
-type RawOiapiSong = Awaited<ReturnType<NonNullable<typeof window.electronAPI>['lyricsApi']['search']>>[number]
-
-function bridge() {
-  return typeof window !== 'undefined' ? window.electronAPI?.lyricsApi : undefined
+interface RawOiapiSong {
+  name: string
+  singer: string[]
+  album: string
+  mid: string
+  id: string | number
+  album_mid: string
+  duration: number
+  image: string
 }
 
+const OIAPI_URL = 'https://www.oiapi.net/api/QQMusicLyric'
+
 async function oiSearch(keyword: string, limit = 10): Promise<LyricCandidate[]> {
-  const api = bridge()
-  if (!api) return []
   try {
-    const rows = await api.search(keyword, 1, limit)
+    let rows: RawOiapiSong[]
+    if (isTauri()) {
+      rows = await tauriInvoke<RawOiapiSong[]>('lyrics_search', { keyword, page: 1, limit })
+    } else {
+      const url = new URL(OIAPI_URL)
+      url.searchParams.set('keyword', keyword)
+      url.searchParams.set('page', '1')
+      url.searchParams.set('limit', String(limit))
+      url.searchParams.set('type', 'json')
+      const response = await fetch(url)
+      const json = await response.json()
+      rows = Array.isArray(json?.data) ? json.data : []
+    }
     return rows.map(normalizeCandidate).filter(Boolean) as LyricCandidate[]
   } catch {
     return []
@@ -51,10 +69,20 @@ async function oiSearch(keyword: string, limit = 10): Promise<LyricCandidate[]> 
 }
 
 async function oiGetLyric(id: string | number): Promise<string> {
-  const api = bridge()
-  if (!api) return ''
   try {
-    const data = await api.get(id, 'lrc')
+    const data = isTauri()
+      ? await tauriInvoke<{ content?: string; conteng?: string } | null>('lyrics_get', { id: String(id), format: 'lrc' })
+      : await (async () => {
+        const url = new URL(OIAPI_URL)
+        url.searchParams.set('id', String(id))
+        url.searchParams.set('format', 'lrc')
+        url.searchParams.set('type', 'json')
+        const response = await fetch(url)
+        const json = await response.json()
+        if (json?.code !== 1) return null
+        if (typeof json.data === 'string') return { content: json.data }
+        return json.data || null
+      })()
     return data?.content || data?.conteng || ''
   } catch {
     return ''

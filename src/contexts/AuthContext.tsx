@@ -74,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     try {
       await apiLogout()
-    } catch { /* Electron 环境才能登出 */ }
+    } catch { /* 桌面环境才能登出 */ }
     setIsLoggedIn(false)
     setUsername('未登录')
     setAvatar('')

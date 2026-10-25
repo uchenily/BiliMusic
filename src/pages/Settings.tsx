@@ -27,6 +27,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { createPlaylistsExport, importPlaylistsFromText } from '@/utils/storage'
 import { runSync, forceUpload, forceDownload, getLastSync, SYNC_STATE_EVENT, WEBDAV_CONFIGURED_EVENT, type SyncResult } from '@/utils/sync'
 import type { AppSettings, SidebarState, ThemeMode } from '@/types'
+import { isTauri, openExternal, tauriInvoke, tauriWebdavApi } from '@/services/tauriApi'
 
 export default function Settings() {
   const { mode, setMode } = useTheme()
@@ -39,43 +40,19 @@ export default function Settings() {
   const [updateAction, setUpdateAction] = useState<'restart' | 'reload' | null>(null)
 
   useEffect(() => {
-    window.electronAPI?.getAppVersion?.()?.then((v) => {
+    if (!isTauri()) return
+    tauriInvoke<string>('get_app_version').then((v) => {
       if (v) setAppVersion(v)
-    })
-    return window.electronAPI?.onUpdaterEvent?.((event) => {
-      switch (event.type) {
-        case 'checking':
-          setUpdateStatus('正在检查更新…'); setUpdateAction(null); break
-        case 'up-to-date':
-          setUpdateStatus(`已是最新版本（v${event.version}）`); setUpdateAction(null); break
-        case 'available':
-          setUpdateStatus(`发现新版本 v${event.version}，正在下载…`); setUpdateAction(null); break
-        case 'progress':
-          setUpdateStatus(`正在下载更新… ${event.percent}%`); break
-        case 'downloaded':
-          setUpdateStatus(`新版本 v${event.version} 已下载`); setUpdateAction('restart'); break
-        case 'manual':
-          setUpdateStatus('已打开下载页，请手动下载最新版本'); setUpdateAction(null); break
-        case 'renderer-available':
-          setUpdateStatus(`发现界面更新 v${event.version}，正在下载…`); setUpdateAction(null); break
-        case 'renderer-progress':
-          setUpdateStatus(`正在下载界面更新… ${event.percent}%`); break
-        case 'renderer-ready-to-apply':
-          setUpdateStatus(`界面更新 v${event.version} 已就绪`); setUpdateAction('reload'); break
-        case 'error':
-          setUpdateStatus(`检查更新失败：${event.message}`); setUpdateAction(null); break
-      }
-    })
+    }).catch(() => {})
   }, [])
 
   const checkUpdate = () => {
-    setUpdateStatus('正在检查更新…')
     setUpdateAction(null)
-    window.electronAPI?.checkForUpdate?.()
+    setUpdateStatus('Tauri 更新器需要配置签名和发布地址后才能使用')
   }
   const runUpdateAction = () => {
-    if (updateAction === 'restart') window.electronAPI?.quitAndInstall?.()
-    else if (updateAction === 'reload') window.electronAPI?.applyRendererUpdate?.()
+    setUpdateStatus('请重新启动应用以应用已安装的更新')
+    setUpdateAction(null)
   }
 
   // ===== 云同步（WebDAV）=====
@@ -88,7 +65,8 @@ export default function Settings() {
   const [lastSync, setLastSync] = useState(getLastSync())
 
   useEffect(() => {
-    window.electronAPI?.getWebdavConfig?.().then((c) => {
+    if (!isTauri()) return
+    tauriWebdavApi.getConfig().then((c) => {
       if (c?.configured) {
         setDavUrl(c.url)
         setDavUser(c.username)
@@ -106,7 +84,7 @@ export default function Settings() {
       return false
     }
     // 密码留空表示沿用已保存的密码（主进程处理）
-    await window.electronAPI?.configureWebdav?.({ url: davUrl.trim(), username: davUser.trim(), password: davPass })
+    await tauriWebdavApi.configure({ url: davUrl.trim(), username: davUser.trim(), password: davPass })
     setDavConfigured(true)
     setDavPass('')
     window.dispatchEvent(new CustomEvent(WEBDAV_CONFIGURED_EVENT)) // 通知 useAutoSync 启用
@@ -118,7 +96,7 @@ export default function Settings() {
   const handleTestWebdav = async () => {
     if (!(await persistWebdav())) return
     setSyncMessage('正在测试连接…')
-    const r = await window.electronAPI?.testWebdav?.()
+    const r = await tauriWebdavApi.test()
     setSyncMessage(r?.message || '测试失败')
   }
   const runSyncTask = async (task: () => Promise<SyncResult>, busyText: string) => {
@@ -279,7 +257,7 @@ export default function Settings() {
                   {updateAction === 'restart' ? '重启并安装' : '立即重载'}
                 </button>
               )}
-              <button type="button" onClick={() => window.electronAPI?.openExternal?.('https://github.com/HanversionOvO/BiliMusic')}>
+              <button type="button" onClick={() => void openExternal('https://github.com/HanversionOvO/BiliMusic')}>
                 <Github size={14} />
                 关于项目
               </button>
