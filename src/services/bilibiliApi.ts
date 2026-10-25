@@ -594,12 +594,18 @@ export async function getPlayUrl(
  * 30250: 杜比全景声
  * 30251: Hi-Res 无损 FLAC
  */
+function compareAudioStream(a: AudioStream, b: AudioStream): number {
+  // 部分视频的不同音频流带宽相同，但高质量流的 id 更大。
+  // 仅按 bandwidth 排序可能因接口返回顺序选中不稳定的音频流。
+  return b.bandwidth - a.bandwidth || b.id - a.id
+}
+
 export function getBestAudioUrl(playData: PlayUrlData): string {
   const audioStreams = playData.dash.audio
   if (!audioStreams?.length) throw new Error('No audio stream available')
 
-  // 按带宽降序排序，选择最高品质
-  const sorted = [...audioStreams].sort((a, b) => b.bandwidth - a.bandwidth)
+  // 先按带宽，再按音频流 id 选择更高质量且更稳定的流。
+  const sorted = [...audioStreams].sort(compareAudioStream)
   return sorted[0].baseUrl
 }
 
@@ -748,7 +754,7 @@ export async function extractAudioFromVideo(
     const playData = await getPlayUrl(bvid, cid)
     const audioUrl = getBestAudioUrl(playData)
 
-    const bestAudio = [...playData.dash.audio].sort((a, b) => b.bandwidth - a.bandwidth)[0]
+    const bestAudio = [...playData.dash.audio].sort(compareAudioStream)[0]
 
     return {
       bvid: detail.bvid,
